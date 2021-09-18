@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: (Apache-2.0 OR MIT OR Zlib) */
+/* Copyright © 2021 Violet Leonard */
+
 //! This crate provides abstractions to type-erase various lists
 //! (Vecs and slices).
 //!
