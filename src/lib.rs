@@ -9,10 +9,6 @@
 //! `Vec<dyn Any>`, where the trait object provides indirection to a single
 //! type.  For heterogeneous lists, some indirection is needed, as found
 //! in `Vec<Box<dyn Any>>`.
-//!
-//! The types in this crate provide `Default` constructors, which will create
-//! empty lists with a private `TypeId` associated with them.  Downcasting
-//! an instance created with the default constructor will always return `None`.
 
 #![no_std]
 #![warn(missing_docs)]
@@ -39,6 +35,12 @@ struct Metadata {
     drop: unsafe fn(*mut (), usize, usize),
 }
 
+impl Metadata {
+    fn is_deferred(&'static self) -> bool {
+        (self.type_id)() == TypeId::of::<DeferredValue>()
+    }
+}
+
 trait HasMetadata {
     const META: &'static Metadata;
 }
@@ -51,7 +53,8 @@ impl<T: Any> HasMetadata for T {
     };
 }
 
-enum DefaultValue {}
+enum DeferredValue {}
+enum OpaqueValue {}
 
 /// A type-erased slice.
 ///
@@ -75,19 +78,10 @@ pub struct SliceAny<'a, B: ?Sized = dyn Any + Send + Sync> {
 unsafe impl<'a, B: ?Sized + Send + Sync> Send for SliceAny<'a, B> {}
 unsafe impl<'a, B: ?Sized + Sync> Sync for SliceAny<'a, B> {}
 
-impl<'a> Default for SliceAny<'a> {
-    /// Create a `SliceAny` with a length of 0, for which downcasting will
-    /// always return `None`.
-    fn default() -> Self {
-        let slice: &[DefaultValue] = &[];
-        Self::from(slice)
-    }
-}
-
 impl<'a, B: ?Sized, T: AnyBound<B>> From<&'a [T]> for SliceAny<'a, B> {
     fn from(slice: &[T]) -> Self {
         let ptr = slice.as_ptr().cast();
-        let meta = &T::META;
+        let meta = T::META;
         let len = slice.len();
         Self {
             ptr,
@@ -95,6 +89,40 @@ impl<'a, B: ?Sized, T: AnyBound<B>> From<&'a [T]> for SliceAny<'a, B> {
             len,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<'a> SliceAny<'a> {
+    /// Create a `SliceAny` with a length of 0, for which downcasting will
+    /// always return `None`.
+    ///
+    /// ```
+    /// use list_any::SliceAny;
+    /// let slice = SliceAny::opaque();
+    /// assert_eq!(slice.downcast::<f64>(), None);
+    /// assert_eq!(slice.downcast::<u32>(), None);
+    /// assert_eq!(slice.downcast::<()>(), None);
+    /// ```
+    #[must_use]
+    pub fn opaque() -> Self {
+        let slice: &[OpaqueValue] = &[];
+        Self::from(slice)
+    }
+
+    /// Create a `SliceAny` with a length of 0, for which downcasting will
+    /// always return `Some`.
+    ///
+    /// ```
+    /// use list_any::SliceAny;
+    /// let slice = SliceAny::deferred();
+    /// assert_eq!(slice.downcast::<f64>(), Some(&[][..]));
+    /// assert_eq!(slice.downcast::<u32>(), Some(&[][..]));
+    /// assert_eq!(slice.downcast::<()>(), Some(&[][..]));
+    /// ```
+    #[must_use]
+    pub fn deferred() -> Self {
+        let slice: &[DeferredValue] = &[];
+        Self::from(slice)
     }
 }
 
@@ -129,13 +157,17 @@ impl<'a, B: ?Sized> SliceAny<'a, B> {
     /// Returns some reference to the original slice if the elements are of
     /// type `T`, or `None` if they are not.
     #[must_use]
-    pub fn downcast<T: Any>(&self) -> Option<&[T]> {
-        (TypeId::of::<T>() == self.type_id_of_element()).then(|| {
+    pub fn downcast<T: AnyBound<B>>(&self) -> Option<&[T]> {
+        if TypeId::of::<T>() == self.type_id_of_element() {
             let ptr = self.ptr.cast::<T>();
             // SAFETY: just checked that we are pointing to the right type
             // using private interface Metadata
-            unsafe { slice::from_raw_parts(ptr, self.len) }
-        })
+            Some(unsafe { slice::from_raw_parts(ptr, self.len) })
+        } else if self.meta.is_deferred() {
+            Some(&[])
+        } else {
+            None
+        }
     }
 }
 
@@ -163,19 +195,10 @@ pub struct SliceAnyMut<'a, B: ?Sized = dyn Any + Send + Sync> {
 unsafe impl<'a, B: ?Sized + Send + Sync> Send for SliceAnyMut<'a, B> {}
 unsafe impl<'a, B: ?Sized + Sync> Sync for SliceAnyMut<'a, B> {}
 
-impl<'a> Default for SliceAnyMut<'a> {
-    /// Create a `SliceAnyMut` with a length of 0, for which downcasting will
-    /// always return `None`.
-    fn default() -> Self {
-        let slice: &mut [DefaultValue] = &mut [];
-        Self::from(slice)
-    }
-}
-
 impl<'a, B: ?Sized, T: AnyBound<B>> From<&'a mut [T]> for SliceAnyMut<'a, B> {
     fn from(slice: &mut [T]) -> Self {
         let ptr = slice.as_mut_ptr().cast();
-        let meta = &T::META;
+        let meta = T::META;
         let len = slice.len();
         Self {
             ptr,
@@ -183,6 +206,40 @@ impl<'a, B: ?Sized, T: AnyBound<B>> From<&'a mut [T]> for SliceAnyMut<'a, B> {
             meta,
             _marker: PhantomData,
         }
+    }
+}
+
+impl<'a> SliceAnyMut<'a> {
+    /// Create a `SliceAnyMut` with a length of 0, for which downcasting will
+    /// always return `None`.
+    ///
+    /// ```
+    /// use list_any::SliceAnyMut;
+    /// let mut slice = SliceAnyMut::opaque();
+    /// assert_eq!(slice.downcast_mut::<f64>(), None);
+    /// assert_eq!(slice.downcast_mut::<u32>(), None);
+    /// assert_eq!(slice.downcast_mut::<()>(), None);
+    /// ```
+    #[must_use]
+    pub fn opaque() -> Self {
+        let slice: &mut [OpaqueValue] = &mut [];
+        Self::from(slice)
+    }
+
+    /// Create a `SliceAnyMut` with a length of 0, for which downcasting will
+    /// always return `Some`.
+    ///
+    /// ```
+    /// use list_any::SliceAnyMut;
+    /// let mut slice = SliceAnyMut::deferred();
+    /// assert_eq!(slice.downcast_mut::<f64>(), Some(&mut [][..]));
+    /// assert_eq!(slice.downcast_mut::<u32>(), Some(&mut [][..]));
+    /// assert_eq!(slice.downcast_mut::<()>(), Some(&mut [][..]));
+    /// ```
+    #[must_use]
+    pub fn deferred() -> Self {
+        let slice: &mut [DeferredValue] = &mut [];
+        Self::from(slice)
     }
 }
 
@@ -217,13 +274,17 @@ impl<'a, B: ?Sized> SliceAnyMut<'a, B> {
     /// Returns some mutable reference to the original slice if the elements
     /// are of type `T`, or `None` if they are not.
     #[must_use]
-    pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut [T]> {
-        (TypeId::of::<T>() == self.type_id_of_element()).then(|| {
+    pub fn downcast_mut<T: AnyBound<B>>(&mut self) -> Option<&mut [T]> {
+        if TypeId::of::<T>() == self.type_id_of_element() {
             let ptr = self.ptr.cast::<T>();
             // SAFETY: just checked that we are pointing to the right type
             // using private interface Metadata
-            unsafe { slice::from_raw_parts_mut(ptr, self.len) }
-        })
+            Some(unsafe { slice::from_raw_parts_mut(ptr, self.len) })
+        } else if self.meta.is_deferred() {
+            Some(&mut [])
+        } else {
+            None
+        }
     }
 
     /// Returns this [`SliceAnyMut`] as an immutable [`SliceAny`].
@@ -276,27 +337,16 @@ mod tests {
         assert_eq!(&data, b"hallo");
     }
 
-    #[cfg(feature = "alloc")]
     #[test]
-    fn downcast_vec() {
-        use alloc::vec::Vec;
+    fn deferred_slices() {
+        let slice = SliceAny::deferred();
+        assert_eq!(slice.downcast::<f64>(), Some(&[][..]));
+        assert_eq!(slice.downcast::<u32>(), Some(&[][..]));
+        assert_eq!(slice.downcast::<()>(), Some(&[][..]));
 
-        let data: Vec<u8> = b"hello".to_vec();
-        let mut vec_any: VecAny = VecAny::from(data);
-
-        assert_eq!(vec_any.type_id_of_element(), TypeId::of::<u8>());
-
-        assert!(vec_any.downcast_mut::<()>().is_none());
-        assert!(vec_any.downcast_mut::<u32>().is_none());
-        assert!(vec_any.downcast_mut::<u8>().is_some());
-
-        assert_eq!(vec_any.downcast_slice::<()>(), None);
-        assert_eq!(vec_any.downcast_slice::<u32>(), None);
-        assert_eq!(vec_any.downcast_slice::<u8>(), Some(&b"hello"[..]));
-
-        let vec_any = vec_any.downcast::<()>().unwrap_err();
-        let vec_any = vec_any.downcast::<u32>().unwrap_err();
-        let data = vec_any.downcast::<u8>().unwrap();
-        assert_eq!(data, b"hello".to_vec());
+        let mut slice = SliceAnyMut::deferred();
+        assert_eq!(slice.downcast_mut::<f64>(), Some(&mut [][..]));
+        assert_eq!(slice.downcast_mut::<u32>(), Some(&mut [][..]));
+        assert_eq!(slice.downcast_mut::<()>(), Some(&mut [][..]));
     }
 }
