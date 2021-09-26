@@ -1,6 +1,6 @@
 [package]
 name = "list-any"
-version = "0.1.0"
+version = "0.2.0-dev0"
 edition = "2018"
 description = "Type erased slices and Vecs"
 homepage = "https://github.com/geeklint/list-any"
