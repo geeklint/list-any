@@ -115,7 +115,18 @@ impl<B: ?Sized> VecAny<B> {
     /// Returns the number of elements the vector can hold without
     /// reallocating.
     #[must_use]
+    #[deprecated(
+        since = "0.2.1",
+        note = "method name was misspelled, use the correct spelling instead"
+    )]
     pub fn capcaity(&self) -> usize {
+        self.cap
+    }
+
+    /// Returns the number of elements the vector can hold without
+    /// reallocating.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
         self.cap
     }
 
